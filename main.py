@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 import requests
+import os
 from requests.exceptions import RequestException, Timeout
 import xml.etree.ElementTree as ET
 
@@ -125,3 +126,41 @@ def trending_coins():
         return {"error": "Trending request timed out"}
     except (RequestException, ValueError) as e:
         return {"error": f"Failed to fetch trending coins: {str(e)}"}
+
+
+@app.get("/tools/wallet-tx")
+def wallet_transactions(address: str, limit: int = 5):
+    api_key = os.getenv("ETHERSCAN_API_KEY")
+
+    if not api_key:
+        return {"error": "ETHERSCAN_API_KEY not set in environment variables"}
+
+    url = (
+        "https://api.etherscan.io/api"
+        f"?module=account&action=txlist&address={address}"
+        f"&startblock=0&endblock=99999999&sort=desc&apikey={api_key}"
+    )
+
+    r = requests.get(url)
+    data = r.json()
+
+    if data.get("status") != "1":
+        return {"error": "failed to fetch transactions", "message": data.get("message")}
+
+    txs = data.get("result", [])[:limit]
+
+    formatted = []
+    for tx in txs:
+        formatted.append({
+            "hash": tx.get("hash"),
+            "from": tx.get("from"),
+            "to": tx.get("to"),
+            "value_eth": int(tx.get("value", "0")) / 10**18,
+            "timeStamp": tx.get("timeStamp")
+        })
+
+    return {
+        "address": address,
+        "count": len(formatted),
+        "transactions": formatted
+    }
