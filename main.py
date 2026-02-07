@@ -1,12 +1,23 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
 import requests
 import os
 import xml.etree.ElementTree as ET
-from requests.exceptions import RequestException, Timeout
 
-app = FastAPI(title="Web3 MCP Tool Server", version="1.0.0")
+app = FastAPI(title="Web3 MCP Tool Server", version="2.0.0")
 
-REQUEST_TIMEOUT = 10  # seconds
+# -----------------------------
+# CORS (allow miniapp frontend)
+# -----------------------------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+REQUEST_TIMEOUT = 15
 
 
 # -----------------------------
@@ -16,200 +27,180 @@ REQUEST_TIMEOUT = 10  # seconds
 def root():
     return {
         "status": "running",
-        "message": "Web3 MCP tool server is live (Binance API version)",
+        "message": "Web3 MCP tool server is live",
         "endpoints": [
             "/tools/ping",
-            "/tools/price?symbol=BTCUSDT",
-            "/tools/price?symbol=ETHUSDT",
-            "/tools/global",
+            "/tools/price?symbol=BTC",
             "/tools/trending",
             "/tools/news",
-            "/tools/wallet-tx?address=0xYOURWALLET&limit=5"
+            "/tools/wallet-tx?address=0x...&limit=5"
         ]
     }
 
 
 # -----------------------------
-# BASIC TOOL
+# PING
 # -----------------------------
 @app.get("/tools/ping")
 def ping():
-    return {"status": "ok", "message": "pong"}
+    return {"status": "success", "message": "pong"}
 
 
 # -----------------------------
-# BINANCE PRICE TOOL
+# PRICE (Coinbase API)
+# Example: /tools/price?symbol=BTC
 # -----------------------------
 @app.get("/tools/price")
-def get_price(symbol: str = "BTCUSDT"):
-    """
-    Binance symbols format examples:
-    BTCUSDT
-    ETHUSDT
-    SOLUSDT
-    XRPUSDT
-    """
+def get_price(symbol: str = Query("BTC", description="Crypto symbol like BTC, ETH")):
+    symbol = symbol.upper()
+
+    product_id = f"{symbol}-USD"
+    url = f"https://api.exchange.coinbase.com/products/{product_id}/ticker"
 
     try:
-        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol.upper()}"
-        r = requests.get(url, timeout=REQUEST_TIMEOUT)
-
-        if r.status_code != 200:
+        res = requests.get(url, timeout=REQUEST_TIMEOUT)
+        if res.status_code != 200:
             return {
                 "status": "error",
-                "error": "binance_failed",
-                "symbol": symbol.upper(),
-                "message": r.text
+                "error": "coinbase_failed",
+                "symbol": symbol,
+                "message": f"Coinbase returned {res.status_code}"
             }
 
-        data = r.json()
+        data = res.json()
 
         return {
             "status": "success",
-            "source": "binance",
-            "symbol": data.get("symbol"),
-            "price": float(data.get("price"))
+            "source": "coinbase",
+            "symbol": symbol,
+            "price_usd": float(data["price"])
         }
 
-    except Timeout:
-        return {"status": "error", "error": "timeout", "message": "binance request timed out"}
-    except RequestException as e:
-        return {"status": "error", "error": "request_failed", "message": str(e)}
-
-
-# -----------------------------
-# GLOBAL MARKET TOOL (COINGECKO)
-# -----------------------------
-@app.get("/tools/global")
-def global_market():
-    try:
-        url = "https://api.coingecko.com/api/v3/global"
-        r = requests.get(url, timeout=REQUEST_TIMEOUT)
-
-        if r.status_code == 429:
-            return {
-                "status": "error",
-                "error": "rate_limited",
-                "message": "CoinGecko rate limited this server. Try again later."
-            }
-
-        data = r.json()
-        market = data.get("data", {})
-
+    except Exception as e:
         return {
-            "status": "success",
-            "source": "coingecko",
-            "total_market_cap_usd": market.get("total_market_cap", {}).get("usd"),
-            "total_volume_usd": market.get("total_volume", {}).get("usd"),
-            "btc_dominance": market.get("market_cap_percentage", {}).get("btc"),
-            "active_cryptocurrencies": market.get("active_cryptocurrencies")
+            "status": "error",
+            "error": "coinbase_failed",
+            "symbol": symbol,
+            "message": str(e)
         }
-
-    except Timeout:
-        return {"status": "error", "error": "timeout", "message": "coingecko request timed out"}
-    except RequestException as e:
-        return {"status": "error", "error": "request_failed", "message": str(e)}
 
 
 # -----------------------------
-# TRENDING COINS TOOL (COINGECKO)
+# TRENDING (CoinGecko)
 # -----------------------------
 @app.get("/tools/trending")
-def trending_coins():
-    try:
-        url = "https://api.coingecko.com/api/v3/search/trending"
-        r = requests.get(url, timeout=REQUEST_TIMEOUT)
+def get_trending():
+    url = "https://api.coingecko.com/api/v3/search/trending"
 
-        if r.status_code == 429:
+    try:
+        res = requests.get(url, timeout=REQUEST_TIMEOUT)
+        if res.status_code != 200:
             return {
                 "status": "error",
-                "error": "rate_limited",
-                "message": "CoinGecko rate limited this server. Try again later."
+                "error": "coingecko_failed",
+                "message": f"CoinGecko returned {res.status_code}"
             }
 
-        data = r.json()
+        data = res.json()
 
-        coins = []
+        trending = []
         for item in data.get("coins", []):
             coin = item.get("item", {})
-            coins.append({
+            trending.append({
                 "name": coin.get("name"),
                 "symbol": coin.get("symbol"),
                 "market_cap_rank": coin.get("market_cap_rank"),
                 "id": coin.get("id"),
-                "score": coin.get("score")
+                "score": item.get("score")
             })
 
         return {
             "status": "success",
             "source": "coingecko",
-            "trending": coins[:10]
+            "trending": trending
         }
 
-    except Timeout:
-        return {"status": "error", "error": "timeout", "message": "coingecko request timed out"}
-    except RequestException as e:
-        return {"status": "error", "error": "request_failed", "message": str(e)}
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": "coingecko_failed",
+            "message": str(e)
+        }
 
 
 # -----------------------------
-# CRYPTO NEWS TOOL (RSS)
+# NEWS (CoinTelegraph RSS)
 # -----------------------------
 @app.get("/tools/news")
-def crypto_news():
+def get_news(limit: int = Query(10, description="Number of headlines")):
     rss_url = "https://cointelegraph.com/rss"
 
     try:
-        r = requests.get(rss_url, timeout=REQUEST_TIMEOUT)
-        xml_text = r.text
+        res = requests.get(rss_url, timeout=REQUEST_TIMEOUT)
+        if res.status_code != 200:
+            return {
+                "status": "error",
+                "error": "rss_failed",
+                "message": f"RSS returned {res.status_code}"
+            }
 
-        root = ET.fromstring(xml_text)
+        root = ET.fromstring(res.text)
 
         headlines = []
-        for item in root.findall(".//item"):
-            title = item.find("title")
-            link = item.find("link")
-
-            if title is not None and link is not None:
-                headlines.append({
-                    "title": title.text,
-                    "link": link.text
-                })
+        for item in root.findall(".//item")[:limit]:
+            title = item.find("title").text if item.find("title") is not None else "No title"
+            link = item.find("link").text if item.find("link") is not None else ""
+            headlines.append({
+                "title": title,
+                "link": link
+            })
 
         return {
             "status": "success",
             "source": "cointelegraph_rss",
-            "headlines": headlines[:10]
+            "headlines": headlines
         }
 
-    except Timeout:
-        return {"status": "error", "error": "timeout", "message": "rss request timed out"}
     except Exception as e:
-        return {"status": "error", "error": "rss_parse_failed", "message": str(e)}
+        return {
+            "status": "error",
+            "error": "rss_failed",
+            "message": str(e)
+        }
 
 
 # -----------------------------
-# WALLET TRANSACTIONS TOOL (ETHERSCAN)
+# WALLET TX (Etherscan API V2)
+# Example:
+# /tools/wallet-tx?address=0x...&limit=5
 # -----------------------------
 @app.get("/tools/wallet-tx")
-def wallet_transactions(address: str, limit: int = 5):
+def wallet_tx(address: str, limit: int = 5):
     api_key = os.getenv("ETHERSCAN_API_KEY")
 
     if not api_key:
         return {
             "status": "error",
             "error": "missing_api_key",
-            "message": "ETHERSCAN_API_KEY not set in Render environment variables"
+            "message": "ETHERSCAN_API_KEY is not set in Render environment variables"
         }
 
-    try:
-        url = (
-            "https://api.etherscan.io/api"
-            f"?module=account&action=txlist&address={address}"
-            f"&startblock=0&endblock=99999999&sort=desc&apikey={api_key}"
-        )
+    url = (
+        f"https://api.etherscan.io/v2/api"
+        f"?chainid=1"
+        f"&module=account"
+        f"&action=txlist"
+        f"&address={address}"
+        f"&startblock=0"
+        f"&endblock=99999999"
+        f"&page=1"
+        f"&offset={limit}"
+        f"&sort=desc"
+        f"&apikey={api_key}"
+    )
 
-        r = requests.get(url, timeout=REQUEST_TIMEOUT)
+    try:
+        r = requests.get(url, timeout=15)
         data = r.json()
 
         if data.get("status") != "1":
@@ -220,29 +211,72 @@ def wallet_transactions(address: str, limit: int = 5):
                 "result": data.get("result")
             }
 
-        txs = data.get("result", [])[:limit]
-
-        formatted = []
-        for tx in txs:
-            formatted.append({
+        txs = []
+        for tx in data.get("result", []):
+            txs.append({
                 "hash": tx.get("hash"),
                 "from": tx.get("from"),
                 "to": tx.get("to"),
                 "value_eth": int(tx.get("value", "0")) / 10**18,
-                "timestamp": tx.get("timeStamp"),
-                "blockNumber": tx.get("blockNumber")
+                "timeStamp": tx.get("timeStamp")
             })
 
         return {
             "status": "success",
-            "source": "etherscan",
+            "source": "etherscan_v2",
             "address": address,
-            "count": len(formatted),
-            "transactions": formatted
+            "transactions": txs
         }
 
-    except Timeout:
-        return {"status": "error", "error": "timeout", "message": "etherscan request timed out"}
-    except RequestException as e:
-        return {"status": "error", "error": "request_failed", "message": str(e)}
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": "etherscan_failed",
+            "message": str(e)
+        }
 
+
+    try:
+        res = requests.get(url, timeout=REQUEST_TIMEOUT)
+        if res.status_code != 200:
+            return {
+                "status": "error",
+                "error": "etherscan_failed",
+                "message": f"Etherscan returned {res.status_code}"
+            }
+
+        data = res.json()
+
+        if data.get("status") != "1":
+            return {
+                "status": "error",
+                "error": "etherscan_failed",
+                "message": data.get("message"),
+                "result": data.get("result")
+            }
+
+        txs = []
+        for tx in data.get("result", []):
+            value_eth = int(tx.get("value", "0")) / 10**18
+
+            txs.append({
+                "hash": tx.get("hash"),
+                "from": tx.get("from"),
+                "to": tx.get("to"),
+                "value_eth": value_eth,
+                "timeStamp": tx.get("timeStamp")
+            })
+
+        return {
+            "status": "success",
+            "source": "etherscan_v2",
+            "address": address,
+            "transactions": txs
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": "etherscan_failed",
+            "message": str(e)
+        }
