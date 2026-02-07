@@ -17,7 +17,8 @@ def root():
             "/tools/ping",
             "/tools/price?coin=ethereum",
             "/tools/global",
-            "/tools/news"
+            "/tools/news",
+            "/tools/trending"
         ]
     }
 
@@ -96,3 +97,31 @@ def crypto_news():
         return {"error": "RSS feed request timed out"}
     except (RequestException, ET.ParseError) as e:
         return {"error": f"Failed to fetch news: {str(e)}"}
+
+
+@app.get("/tools/trending")
+def trending_coins():
+    try:
+        url = "https://api.coingecko.com/api/v3/search/trending"
+        r = requests.get(url, timeout=REQUEST_TIMEOUT)
+        r.raise_for_status()
+        data = r.json()
+
+        coins = []
+        for item in data.get("coins", []):
+            coin = item.get("item", {})
+            coins.append({
+                "name": coin.get("name"),
+                "symbol": coin.get("symbol"),
+                "market_cap_rank": coin.get("market_cap_rank"),
+                "id": coin.get("id")
+            })
+
+        return {
+            "source": "coingecko",
+            "trending": coins[:10]
+        }
+    except Timeout:
+        return {"error": "Trending request timed out"}
+    except (RequestException, ValueError) as e:
+        return {"error": f"Failed to fetch trending coins: {str(e)}"}
